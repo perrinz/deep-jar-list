@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<project name="deep-jar-list" default="dist">
+
+    <target name="init">
+        <property name="target" value="${basedir}/target"/>
+        <property name="classes" value="${target}/classes"/>
+        <property name="jars" value="${target}/jars"/>
+    </target>
+
+    <target name="clean" depends="init">
+        <delete dir="${target}"/>
+    </target>
+
+    <target name="jar" depends="init">
+        <mkdir dir="${classes}/deepjarlist"/>
+        <javac srcdir="${basedir}/src" destdir="${classes}/deepjarlist" debug="false" includeantruntime="false"/>
+        <jar jarfile="${jars}/deepjarlist.jar" basedir="${classes}/deepjarlist" includes="**/*.class">
+            <manifest> <attribute name="Main-Class" value="com.perrinz.deepjarlist.DeepJarList"/> </manifest>
+        </jar>
+    </target>
+
+    <target name="dist" depends="jar">
+        <zip destfile="${target}/deepjarlist.zip">
+            <fileset dir="${jars}" includes="deepjarlist.jar"/>
+            <zipfileset dir="${basedir}/bin" includes="djl.sh" filemode="755"/>
+        </zip>
+    </target>
+
+</project>
