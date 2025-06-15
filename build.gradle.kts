@@ -12,6 +12,7 @@ repositories {
 
 dependencies {
     implementation("com.github.ajalt.clikt:clikt:4.2.2")
+    implementation("com.github.ajalt.mordant:mordant:2.2.0")
 }
 
 kotlin {

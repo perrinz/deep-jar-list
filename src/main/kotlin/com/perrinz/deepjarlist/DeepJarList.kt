@@ -7,6 +7,13 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.multiple
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.split
+import com.github.ajalt.clikt.parameters.types.choice
+import com.github.ajalt.clikt.parameters.options.default
+import com.github.ajalt.mordant.rendering.TextColors
+import com.github.ajalt.mordant.rendering.TextStyles
+import com.github.ajalt.mordant.rendering.AnsiLevel
+import com.github.ajalt.mordant.terminal.Terminal
+import com.github.ajalt.mordant.terminal.TerminalInfo
 import java.io.*
 import java.security.MessageDigest
 import java.util.*
@@ -20,7 +27,8 @@ private const val MAX_FILE_SIZE = 128 * 1024 * 1024L // 128MB
 private const val BUFFER_SIZE = 4096
 private const val MANIFEST_FILENAME = "manifest.mf"
 private const val XML_EXTENSION = "xml"
-private const val PADDING_BASE = "                                    " // 36 spaces for max depth
+private const val BOX_VERTICAL = "│ "
+private const val BOX_END = "└──"
 private const val FILE_TOO_LARGE_MESSAGE = " = [ Skipping file -- too large. ]"
 
 class DeepJarList : CliktCommand(name = "DeepJarList", help = "Display contents of nested JAR/ZIP files") {
@@ -31,6 +39,7 @@ class DeepJarList : CliktCommand(name = "DeepJarList", help = "Display contents 
     private val showFileHash by option("-5", "--md5", help = "Show MD5 hash for each file").flag()
     private val extensionList by option("-e", "--extensions", help = "Show contents of files with given comma-delimited extensions").split(",")
     private val filterPattern by option("-f", "--filter", help = "Only display file names matching regex")
+    private val colorMode by option("--color", help = "When to use colors").choice("auto", "always", "never").default("auto")
     private val jarFiles by argument("JAR_FILES", help = "JAR files to analyze").multiple(required = true)
 
     private val extensions = mutableSetOf<String>()
@@ -42,6 +51,15 @@ class DeepJarList : CliktCommand(name = "DeepJarList", help = "Display contents 
             extensions.addAll(ext.lowercase().split(",").filter { it.isNotEmpty() })
         }
         pattern = filterPattern?.toRegex()
+        
+        val terminal = when (colorMode) {
+            "always" -> Terminal(ansiLevel = AnsiLevel.TRUECOLOR)
+            "never" -> Terminal(ansiLevel = AnsiLevel.NONE)
+            else -> Terminal() // auto-detect
+        }
+        
+        val useColors = colorMode != "never"
+        
 
         jarFiles.forEach { jarFile ->
             val file = File(jarFile)
@@ -49,9 +67,9 @@ class DeepJarList : CliktCommand(name = "DeepJarList", help = "Display contents 
                 println("warning: file ${file.path} does not exist, skipping")
             } else {
                 ZipInputStream(FileInputStream(file)).use { zipInputStream ->
-                    println("${file.name} = [")
-                    listEntries(zipInputStream, 1, extensions, showManifest, showLineNos, pattern, showFileSize, showFileHash)
-                    println("]")
+                    terminal.println(TextColors.brightBlue(file.name))
+                    listEntries(zipInputStream, 1, extensions, showManifest, showLineNos, pattern, showFileSize, showFileHash, terminal, useColors)
+                    terminal.println(generateEndPadding(1, file.name, terminal))
                 }
             }
         }
@@ -67,7 +85,10 @@ private fun readMagicBytes(inputStream: InputStream): ByteArray {
 
 private fun isZipFile(magic: ByteArray): Boolean = magic.contentEquals(ZIP_MAGIC)
 
-private fun generatePadding(level: Int): String = PADDING_BASE.substring(0, level * 4)
+private fun generatePadding(level: Int): String = BOX_VERTICAL.repeat(level)
+
+private fun generateEndPadding(level: Int, filename: String, terminal: Terminal): String = 
+    BOX_VERTICAL.repeat(level - 1) + BOX_END + " " + terminal.render(TextColors.gray(filename))
 
 private fun getFileExtension(filename: String): String? {
     val lastDotPos = filename.lastIndexOf(".")
@@ -91,7 +112,9 @@ private fun listEntries(
     showLineNos: Boolean, 
     pattern: Regex?, 
     showFileSize: Boolean, 
-    showFileHash: Boolean
+    showFileHash: Boolean,
+    terminal: Terminal,
+    useColors: Boolean
 ) {
     val padding = generatePadding(level)
     var excludedByPattern = 0
@@ -99,7 +122,7 @@ private fun listEntries(
         val zipEntry = zipInputStream.nextEntry ?: break
         if (zipEntry.isDirectory) {
             if (pattern?.matches(zipEntry.name) != false) {
-                println("$padding${zipEntry.name}")
+                terminal.println("$padding${zipEntry.name}")
             }
             continue
         }
@@ -108,47 +131,51 @@ private fun listEntries(
         val showFile = shouldShowFileContent(zipEntry, extensions, showManifest)
         
         if (isJar || showFile) {
-            print("$padding${zipEntry.name}")
             if (zipEntry.size > MAX_FILE_SIZE) {
-                println(FILE_TOO_LARGE_MESSAGE)
+                val coloredName = if (isJar) {
+                    TextColors.brightBlue(zipEntry.name)
+                } else {
+                    TextColors.green(zipEntry.name)
+                }
+                terminal.println("$padding${terminal.render(coloredName)}${fileInfo(zipEntry, magicBytes, zipInputStream, showFileSize, showFileHash)}")
+                terminal.println("${generatePadding(level + 1)}[ Skipping file -- too large. ]")
             } else {
                 val fileBytes = readFileBytes(zipEntry, magicBytes, zipInputStream)
-                println(fileInfo(fileBytes, showFileSize, showFileHash) + " = [")
+                val coloredName = if (isJar) {
+                    TextColors.brightBlue(zipEntry.name)
+                } else {
+                    TextColors.green(zipEntry.name)
+                }
+                terminal.println("$padding${terminal.render(coloredName)}${fileInfo(fileBytes, showFileSize, showFileHash)}")
                 val bais = ByteArrayInputStream(fileBytes)
                 if (isJar) {
                     ZipInputStream(bais).use { nestedZip ->
-                        listEntries(nestedZip, level + 1, extensions, showManifest, showLineNos, pattern, showFileSize, showFileHash)
+                        listEntries(nestedZip, level + 1, extensions, showManifest, showLineNos, pattern, showFileSize, showFileHash, terminal, useColors)
                     }
                 } else { // showFile
+                    val contentPadding = generatePadding(level + 1)
                     if (showLineNos) {
                         LineNumberReader(InputStreamReader(bais)).use { lnr ->
                             var line: String?
                             while ((lnr.readLine().also { line = it }) != null) {
-                                println(
-                                    padding + "    ".substring(
-                                        min(
-                                            lnr.lineNumber.toString().length,
-                                            4
-                                        )
-                                    ) + lnr.lineNumber + " " + line
-                                )
+                                terminal.println("$contentPadding${lnr.lineNumber} $line")
                             }
                         }
                     } else {
                         BufferedReader(InputStreamReader(bais)).use { br ->
                             var line: String?
-                            while ((br.readLine().also { line = it }) != null) println("$padding    $line")
+                            while ((br.readLine().also { line = it }) != null) terminal.println("$contentPadding$line")
                         }
                     }
                 }
+                terminal.println(generateEndPadding(level + 1, zipEntry.name, terminal))
             }
-            println("$padding]")
         } else {
             if (pattern == null) {
-                println("$padding${zipEntry.name}${fileInfo(zipEntry, magicBytes, zipInputStream, showFileSize, showFileHash)}")
+                terminal.println("$padding${zipEntry.name}${fileInfo(zipEntry, magicBytes, zipInputStream, showFileSize, showFileHash)}")
             } else {
                 if (pattern.matches(zipEntry.name)) {
-                    println("$padding${zipEntry.name}${fileInfo(zipEntry, magicBytes, zipInputStream, showFileSize, showFileHash)}")
+                    terminal.println("$padding${zipEntry.name}${fileInfo(zipEntry, magicBytes, zipInputStream, showFileSize, showFileHash)}")
                 } else {
                     excludedByPattern++
                 }
@@ -157,7 +184,7 @@ private fun listEntries(
         zipInputStream.closeEntry()
     }
     if (excludedByPattern > 0) {
-        println("$padding($excludedByPattern files excluded by filter)")
+        terminal.println("$padding($excludedByPattern files excluded by filter)")
     }
 }
 
